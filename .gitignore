@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+._*
+__pycache__/
+# Blender's automatic backups
+*.blend1
+# Third-party aircraft models and liveries have their own licenses, so they stay out of this public repo.
+3d-aircraft/
+A350-1000-Liveries/
+# Licensed sound effects stay on this machine too.
+sound/
+# Reference photos of Logan, not ours to publish.
+KBOS-*-view*.jpeg
