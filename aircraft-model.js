@@ -39,7 +39,8 @@ export function setAircraftEnvironment(map, intensity) {
 }
 const glowingMaterials = new Set();
 
-export async function loadModels() {
+/* files: a different file for a model id, such as a version with opening doors for the ramp sim. */
+export async function loadModels(files = {}) {
     let manifest;
     try {
         manifest = await (await fetch(MANIFEST)).json();
@@ -49,12 +50,12 @@ export async function loadModels() {
     const loader = new GLTFLoader();
     await Promise.all(Object.entries(manifest.models).map(async ([id, model]) => {
         try {
-            const gltf = await loader.loadAsync(`3d-aircraft/${model.file}`);
+            const gltf = await loader.loadAsync(`3d-aircraft/${files[id] || model.file}`);
             const extras = gltf.asset?.extras || {};
             gltf.scene.traverse(o => { if (o.isMesh) o.castShadow = true; });
             const wheelbase = extras.wheelbaseM || WHEELBASE_M * SIZE_SCALE[model.sizeClasses[0]];
             const shape = shapeOf(gltf.scene, wheelbase);
-            models[id] = { id, scene: gltf.scene, sizeClasses: model.sizeClasses, wheelbase, fin: shape.fin,
+            models[id] = { id, scene: gltf.scene, sizeClasses: model.sizeClasses, wheelbase, fin: shape.fin, doors: extras.doors || [],
                 lights: extras.lights?.length ? extras.lights : lightsFromShape(shape) };
         } catch (err) {
             console.warn(`Aircraft model ${id} did not load:`, err.message);
@@ -176,6 +177,7 @@ function realAirliner(model, livery, sizeClass) {
     const plane = withShadow(object, SIZE_SCALE[sizeClass] || 1, model.wheelbase);
     plane.userData.modelId = model.id;
     plane.userData.liveryName = livery?.name || '';
+    plane.userData.doors = model.doors;
     // Its lights, all switched off until the sim says otherwise (steady ones show only after dark). Lights
     // whose color X-Plane sets at run time come through negative and would darken the scene, so they go.
     const kinds = { beacon: KIND.beacon, strobe: KIND.strobe, landing: KIND.landing };

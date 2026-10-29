@@ -57,6 +57,22 @@ It poses the model with the gear down (`acf_gear_deploy` or `gear/deploy_ratio` 
 0 = -800, 1 = -900, 2 = -700, 3 = -600, 4 = -900ER), keeps the aircraft's light positions, gives each cabin
 window a random number so some light up at night, and shrinks textures to 2048 pixels.
 
+**Doors that open** (for the ramp): `--animate DATAREF=NODE,...` keeps the listed doors movable instead of
+baking them shut. Whatever each dataref moves (the door skin, its window, its inside lining) becomes a child
+node with that name, drawn closed, with a morph target for each sampled value up to 1 (keyframes plus enough
+in between to stay within 1 cm of X-Plane's motion) and an animation of the same name: set the clip's time to
+the door's 0..1 ratio. Materials keep their names, so liveries still paint the doors. The file's
+`asset.extras.doors` lists each door's node, dataref, sample values, side, hinge, sill point, size and bounds
+closed and open. `B739-doors.glb` adds the cargo holds and door vestibules (`cabin/737_9ENG_cabin_underfloor.obj`)
+so open doors show an inside:
+
+```
+python3 tools/xplane_obj_to_glb.py "path/to/737NG Series" 3d-aircraft/models/B739-doors.glb --acf 737_9ENG.acf \
+  --objects 737_9ENG/737_9ENG_fuselage.obj,cabin/737_9ENG_glass_exterior.obj,737_9ENG/737_9ENG_fuselage2.obj,737_wing.obj,737_wltail.obj,737_cfm56.obj,737_lg.obj,737_glass.obj,737_alpha.obj,cabin/737_9ENG_cabin_underfloor.obj,737_lights.obj,737_lights2.obj \
+  --windows cabin/737_9ENG_glass_exterior.obj --set b737_variant=4 --set wings_variant=1 --set led_lights=1 \
+  --animate 737u/doors/Fwd_Cargo=fwd_cargo,737u/doors/aft_Cargo=aft_cargo,737u/doors/L1=door_L1,737u/doors/L2=door_L2,737u/doors/R1=door_R1,737u/doors/R2=door_R2
+```
+
 **Registering it and adding liveries** (any livery folder painted for that model):
 
 ```
@@ -223,6 +239,69 @@ the start), then encode with `afconvert -f m4af -d aac -b 128000 in.wav out.m4a`
 | `ground-traffic.js` | Departures: pushback, taxi, hold short, crossings, line-up, takeoff |
 | `tools/xplane_obj_to_glb.py` | Converts an X-Plane aircraft's exterior to a .glb model |
 | `tools/make_loop.py` | Turns a recording into a seamless loop |
+| `tools/rocketbox_to_glb.py` | Dresses Rocketbox avatars as ramp agents and builds their animations |
 | `tools/add_livery.py` | Registers models and builds web-size liveries in `3d-aircraft/aircraft.json` |
 
 Run the tests from the project folder with `node --test`.
+
+## Ramp operations simulator (`ramp.html`)
+
+A training sim for ramp agents at one gate: open <http://127.0.0.1:8000/ramp.html>. An aircraft arrives,
+and the crew prepare the stand, park it, make it safe, dock the bridge and service it. You play one
+role and the sim does the others, so each role can be practised on its own.
+
+- **Roles:** marshaller, wing walkers, lead ramp agent, bridge operator, or observer (watch a clean turn).
+- **Moving and acting:** **WASD** to walk, **Shift** to hurry, drag to look, wheel to zoom. **E** does
+  the task at the yellow marker. Marshallers and wing walkers signal with the number keys or the
+  buttons. **V** changes the view (follow, orbit, flight deck, bridge cab); **H** shows the engine
+  intake and exhaust hazard zones.
+- **Guided:** shows your next step and where to go. Untick it to assess someone without hints.
+- **Scoring:** every action is checked against the safety rules (nobody approaches before the beacon is
+  off, chocks before equipment, no equipment in the ERA during arrival, keep out of engine zones, stop
+  on the bar). Breaking one is logged with the reason; the debrief lists them and gives pass or fail.
+- **Scenarios** are JSON files in `ramp/scenarios/`, listed in `ramp/scenario-list.json`. Each gives
+  the aircraft, time of day, guidance (`marshaller` or `vdgs`) and the steps in order: who does each
+  (`role`), what (`action`, from `ACTIONS` in `ramp/procedures.js`), what it follows (`after`) and the
+  pause before the sim does it (`delay`). `node --test ramp/` checks every scenario is a clean turn.
+- **On the stand:**
+  - FAA-style markings: lead-in line, 737 stop bar, red ERA line, service road, bridge parking box,
+    GSE boxes and hydrant pits.
+  - An apron-drive jet bridge (`ramp/jetway.js`) carrying its point-of-use equipment: a PCA unit
+    with its yellow hose in a basket, a 400 Hz converter with a cable hoist, and a potable water
+    cabinet. The hose and cable run out to the aircraft's connectors.
+  - A belt loader, chocks and cones (`ramp/gse.js`), and the tug and baggage train from the tower sim.
+- **Crew** are Microsoft Rocketbox avatars (`models/crew/`, MIT license in `LICENSE-Rocketbox.txt`) dressed
+  for the ramp by `tools/rocketbox_to_glb.py`. It takes off the hard hats and tool belts, repaints the
+  workwear, fits a hi-vis vest cut from each body's own torso (so it bends with it), and adds caps or
+  beanies, earmuffs or a headset, a speaker-mic and lighted wands. `--uniform delta` gives a red shirt,
+  dark gray trousers, black boots, a gray cap and an orange vest with lime bands, a black hem, a flag
+  patch and the name. They walk, crouch and knock with Rocketbox's recorded animations
+  (`models/crew/animations.glb`), and the marshalling signals move their arm bones. To rebuild them
+  (Blender 4.2 or later; avatars from `Assets/Avatars/Professions/` in the Rocketbox repository):
+
+  ```
+  blender -b --python tools/rocketbox_to_glb.py -- avatar Construction_Male_05 models/crew/marshaller.glb --uniform delta --headwear cap --ears muffs
+  blender -b --python tools/rocketbox_to_glb.py -- animations --rig Construction_Male_05/Export/Construction_Male_05.fbx models/crew/animations.glb m_idle_neutral_01.fbx m_walk_neutral_01.fbx m_run_slow_01.fbx m_idle_look_around_01.fbx m_crouch_in.fbx m_crouch_idle.fbx m_crouch_out.fbx m_knock_door.fbx
+  ```
+
+  The crew files are marshaller (Construction_Male_05), wingwalker-1 (Male_02, beanie), wingwalker-2
+  (Female_01, beanie), lead (Male_08, headset) and agent (Male_06, headset). Without them the sim
+  draws simple people instead, who wear the same ramp PPE:
+  - ANSI Class 2/3 vests with reflective bands
+  - earmuffs, or a headset with a boom mic and a radio on the vest
+  - safety glasses, gloves and boots
+  - lighted wands for marshallers and wing walkers
+
+  Signals follow FAA AC 00-34.
+- **Weather** (`ramp/atmosphere.js`): clear, scattered clouds, overcast, rain, snow or fog, from the
+  scenario's `weather` or the **Weather** menu. It follows how the browser game Slow Roads does it:
+  - **Sky and fog are one function:** the horizon-to-zenith color, the glow toward the sun and the
+    noisy ground haze are worked out per pixel for both the ground and the sky, so they meet with no seam.
+  - **Look table:** a hand-tuned table of colors and visibility for each weather.
+  - **Clouds:** a deck at the ceiling height that drifts with the wind.
+  - **Rain and snow** fall entirely on the GPU.
+  - **Wet pavement:** it darkens and turns glossy, with puddles that reflect the floodlights and ring in the rain.
+  - **Snow:** it settles on the bridge and equipment and lies in drifts on the plowed ramp, but not on
+    the aircraft or crew.
+- **Doors:** with `3d-aircraft/models/B739-doors.glb` (see "Doors that open" above) the cargo and
+  passenger doors open, so unloading shows bags coming out of the forward hold.
