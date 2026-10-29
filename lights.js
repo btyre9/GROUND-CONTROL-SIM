@@ -9,7 +9,7 @@ import * as THREE from 'three';
 export const lightUniforms = { uTime: { value: 0 }, uDark: { value: 0 }, uScale: { value: 400 }, uHaze: { value: 0 }, uFogFar: { value: 1e6 } };
 
 // Kinds: how a light behaves.
-export const KIND = { steady: 0, beacon: 1, strobe: 2, landing: 3, airfield: 4 };
+export const KIND = { steady: 0, beacon: 1, strobe: 2, landing: 3, airfield: 4, taxi: 5 };
 
 const vertexShader = `
     attribute vec3 color;
@@ -18,6 +18,7 @@ const vertexShader = `
     attribute float phase;
     uniform float uTime, uDark, uScale, uHaze, uFogFar;
     uniform vec4 uOn;          // Switches for beacon, strobe, landing and steady lights.
+    uniform float uTaxi;       // Switch for the nose gear taxi light.
     varying vec3 vColor;
     varying float vBright;
     void main() {
@@ -26,7 +27,8 @@ const vertexShader = `
         else if (kind < 1.5) { float t = fract(uTime * 0.9 + phase); on = uOn.x * (t < 0.12 ? 1.0 : 0.0) * (0.35 + 0.65 * uDark); }
         else if (kind < 2.5) { float t = fract(uTime * 0.8 + phase); on = uOn.y * ((t < 0.05 || (t > 0.12 && t < 0.17)) ? 1.0 : 0.0); }
         else if (kind < 3.5) on = uOn.z * (0.25 + 0.75 * uDark);
-        else on = uDark;
+        else if (kind < 4.5) on = uDark;
+        else on = uTaxi * (0.25 + 0.75 * uDark);
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         on *= 1.0 - smoothstep(uFogFar * 0.7, uFogFar * 1.8, -mv.z);
         vColor = color;
@@ -51,9 +53,9 @@ const fragmentShader = `
         gl_FragColor = vec4(vColor * vBright * (core + halo), 1.0);
     }`;
 
-export function lightMaterial(on = [1, 1, 1, 1]) {
+export function lightMaterial(on = [1, 1, 1, 1], taxi = 0) {
     return new THREE.ShaderMaterial({
-        uniforms: { ...lightUniforms, uOn: { value: new THREE.Vector4(...on) } },
+        uniforms: { ...lightUniforms, uOn: { value: new THREE.Vector4(...on) }, uTaxi: { value: taxi } },
         vertexShader, fragmentShader, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
     });
 }

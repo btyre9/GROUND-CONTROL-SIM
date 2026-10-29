@@ -12,7 +12,7 @@ import { unzipSync, strFromU8 } from 'fflate';
 import { buildAirport, buildStructures, setDarkness, setWet, LAYER } from './airport-scene.js';
 import { buildImagery, imageryTint } from './imagery.js';
 import { lightUniforms } from './lights.js';
-import { makeAirliner, placeAirliner, loadModels, setNightGlow, setAircraftLights, PASSENGER_AIRLINES, AIRLINES } from './aircraft-model.js';
+import { makeAirliner, placeAirliner, loadModels, setNightGlow, setAircraftLights, setAircraftEnvironment, PASSENGER_AIRLINES, AIRLINES } from './aircraft-model.js';
 import { Departure, spokenRunway } from './ground-traffic.js';
 import { GroundRadar } from './ground-radar.js';
 import { AirportSound } from './sounds.js';
@@ -43,6 +43,44 @@ const sky = new THREE.HemisphereLight(0xdfeaff, 0x77736a, 1.6);     // Sky above
 scene.add(sky);
 const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
 sun.position.set(-3000, 6000, 2500);
+// After dark the apron's high-mast floodlights light the ramp and the jets on it from high above.
+const floodlights = new THREE.DirectionalLight(0xf4f1ea, 0);
+floodlights.position.set(1500, 4000, 900);
+scene.add(floodlights);
+
+/* What surrounds everything, as image-based lighting: the sky overhead, the bright horizon and the
+   pavement below. By day it is the sky; at night it is the floodlit airport, so white fuselages and
+   their liveries stay readable instead of going black, and the paint picks up a sheen. It is redrawn
+   into a lighting map whenever the light changes, and lights the aircraft only. */
+const surroundings = new THREE.Scene();
+const surroundMaterial = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, bottom: { value: new THREE.Color() } },
+    vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `uniform vec3 top, horizon, bottom; varying vec3 vDir;
+        void main() {
+            float y = vDir.y;
+            vec3 c = y > 0.0 ? mix(horizon, top, smoothstep(0.0, 0.45, y)) : mix(horizon, bottom, smoothstep(0.0, 0.2, -y));
+            gl_FragColor = vec4(c, 1.0);
+        }`
+});
+surroundings.add(new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), surroundMaterial));
+const pmrem = new THREE.PMREMGenerator(renderer);
+let surroundTarget = null, surroundKey = '';
+const NIGHT_SURROUND = { top: new THREE.Color(0x0b0e16), horizon: new THREE.Color(0xfff0dc).multiplyScalar(1.5), bottom: new THREE.Color(0x77716a) };
+function updateSurroundings(L, cover, intensity) {
+    const u = surroundMaterial.uniforms, k = L.dark;
+    u.top.value.copy(L.skyColor).multiplyScalar(0.8 * (1 - cover * 0.4)).lerp(NIGHT_SURROUND.top, k);
+    u.horizon.value.copy(L.horizon).lerp(NIGHT_SURROUND.horizon, k);
+    u.bottom.value.copy(L.groundColor).lerp(NIGHT_SURROUND.bottom, k);
+    const key = [u.top.value, u.horizon.value, u.bottom.value].map(c => c.getHexString()).join();
+    if (key !== surroundKey) {
+        surroundKey = key;
+        surroundTarget?.dispose();
+        surroundTarget = pmrem.fromScene(surroundings, 0, 0.1, 100);
+    }
+    setAircraftEnvironment(surroundTarget.texture, intensity);
+}
 
 /* The sim's clock: the real time ("Now") or a time of day picked from the menu, worked out from that
    day's sunrise and sunset at the airport. It runs on with the sim, so the sun keeps moving. */
@@ -66,6 +104,7 @@ function setTimeOfDay(choice) {
 /* Time of day and weather together: the sky and the light on the scene, fog distance from the
    visibility, how much sun gets through the clouds, wet ground, and airfield lights on after dark or in
    low visibility. */
+const smoothstep01 = x => x * x * (3 - 2 * x);
 function applyEnvironment() {
     const w = world.weather, cover = w?.cover || 0, wet = Boolean(w?.precip);
     const origin = world.airport?.origin || { lat: 42.36, lon: -71.0 };
@@ -85,6 +124,9 @@ function applyEnvironment() {
     sky.color.copy(L.skyColor); sky.groundColor.copy(L.groundColor); sky.intensity = L.skyIntensity * (1 - cover * 0.3);
     sun.color.copy(L.sunColor); sun.intensity = L.sunIntensity * (1 - cover * 0.8);
     sun.position.copy(L.sunDir).multiplyScalar(6000);
+    // The floodlights come on at dusk; by day the surroundings add only a little sheen.
+    floodlights.intensity = 0.85 * smoothstep01(L.dark);
+    updateSurroundings(L, cover, 0.25 + 0.75 * L.dark);
     imageryTint.setScalar((1 - L.dark * 0.82) * (wet ? 0.8 : 1));
     const lowVisibility = w && (w.visibilityM < 4800 || (w.ceilingFt !== null && w.ceilingFt < 1000));
     const dark = Math.max(L.dark, lowVisibility ? 0.6 : 0);

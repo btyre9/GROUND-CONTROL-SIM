@@ -34,24 +34,43 @@ function cloudTexture(size = 256) {
 function cloudMaterial() {
     return new THREE.ShaderMaterial({
         uniforms: { map: { value: cloudTexture() }, cover: { value: 0 }, offset: { value: new THREE.Vector2() },
-            light: { value: new THREE.Color(1, 1, 1) }, shade: { value: new THREE.Color(0.6, 0.62, 0.66) } },
+            light: { value: new THREE.Color(1, 1, 1) }, shade: { value: new THREE.Color(0.6, 0.62, 0.66) },
+            haze: { value: new THREE.Color(0.7, 0.72, 0.75) } },
         vertexShader: `
-            varying vec2 vUv; varying float vDist;
+            varying vec2 vUv; varying vec3 vView;
             void main() {
                 vUv = uv;
                 vec4 mv = modelViewMatrix * vec4(position, 1.0);
-                vDist = length(mv.xyz);
+                vView = mv.xyz;          // Distance is taken per pixel: the deck is one huge quad.
                 gl_Position = projectionMatrix * mv;
             }`,
         fragmentShader: `
-            uniform sampler2D map; uniform float cover; uniform vec2 offset; uniform vec3 light, shade;
-            varying vec2 vUv; varying float vDist;
+            uniform sampler2D map; uniform float cover; uniform vec2 offset; uniform vec3 light, shade, haze;
+            varying vec2 vUv; varying vec3 vView;
             void main() {
+                float vDist = length(vView);
+                // Broken layers: patches where the noise is thick enough.
                 float n = texture2D(map, vUv * 9.0 + offset).r * 0.75 + texture2D(map, vUv * 31.0 + offset * 1.3).r * 0.25;
                 float a = smoothstep(1.0 - cover - 0.12, 1.0 - cover + 0.18, n);
-                a *= 1.0 - smoothstep(9000.0, 30000.0, vDist);      // Thin out toward the horizon.
+                float tone = smoothstep(0.4, 1.0, n);
+                if (cover > 1.0) {
+                    // Overcast: rolling stratocumulus. Billow noise (folded at its middle value) makes
+                    // rounded masses with a dark, heavy core and light seams where they meet; a gentle warp
+                    // keeps the masses from lining up.
+                    vec2 uv = vUv * 26.0 + offset;
+                    vec2 warp = vec2(texture2D(map, uv * 0.21).r, texture2D(map, uv * 0.21 + 0.37).r) - 0.5;
+                    float b1 = abs(texture2D(map, uv + warp * 0.5).r * 2.0 - 1.0);
+                    float b2 = abs(texture2D(map, uv * 2.3 + warp * 0.7 + 0.5).r * 2.0 - 1.0);
+                    float fine = texture2D(map, uv * 7.0).r;
+                    tone = 0.15 + 0.85 * smoothstep(0.0, 0.5, b1 * 0.62 + b2 * 0.3 + fine * 0.08);
+                    a = 1.0;
+                }
+                vec3 color = mix(light, shade, tone);
+                // Far away the deck merges into the brighter haze at the horizon.
+                color = mix(color, haze, smoothstep(4000.0, 22000.0, vDist));
+                if (cover <= 1.0) a *= 1.0 - smoothstep(9000.0, 30000.0, vDist);      // Broken layers thin out.
                 if (a < 0.01) discard;
-                gl_FragColor = vec4(mix(light, shade, smoothstep(0.4, 1.0, n)), a * 0.95);
+                gl_FragColor = vec4(color, a * (cover > 1.0 ? 1.0 : 0.95));
             }`,
         transparent: true, depthWrite: false, side: THREE.DoubleSide
     });
@@ -162,9 +181,11 @@ export class WeatherScene {
         const ambient = 1 - dark * 0.88;
         this.snow.material.color.setScalar(0.92 * ambient);
         this.rain.material.color.setRGB(0.72, 0.76, 0.8).multiplyScalar(ambient);
-        const u = this.cloud.material.uniforms;
-        u.light.value.setRGB(1, 1, 1).lerp(new THREE.Color(0.08, 0.09, 0.11), dark);
-        u.shade.value.setRGB(0.58, 0.6, 0.64).lerp(new THREE.Color(0.04, 0.045, 0.055), dark);
+        const u = this.cloud.material.uniforms, overcast = u.cover.value > 1;
+        // Overcast decks are lit from above, so seen from below they're mostly gray with darker masses.
+        u.light.value.setRGB(...(overcast ? [0.52, 0.54, 0.57] : [1, 1, 1])).lerp(new THREE.Color(0.08, 0.09, 0.11), dark);
+        u.shade.value.setRGB(...(overcast ? [0.13, 0.14, 0.16] : [0.58, 0.6, 0.64])).lerp(new THREE.Color(0.03, 0.035, 0.045), dark);
+        if (haze) u.haze.value.copy(haze);
     }
 
     /* Each frame (dt is sim seconds, 0 while paused). Returns the lightning flash, 0 to 1. */

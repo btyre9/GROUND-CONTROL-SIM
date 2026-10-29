@@ -79,9 +79,16 @@ plain white. A livery pack alone has no 3D model: it needs the aircraft it was p
 At night:
 - **Airfield lights:** taxiway edge and centerline lights, hold-short lights, and runway edge, threshold and
   end lights, all taken from the airport data.
-- **Floodlights:** apron floodlights glow, and terminal windows light up with some rooms dark.
-- **Aircraft:** cabin windows light up at random, with nav and logo lights on. The beacon comes on at
-  pushback, and taxi lights and strobes come on for the runway.
+- **Floodlights:** apron floodlights glow and light the ramp from high above, and terminal windows light up
+  with some rooms dark.
+- **Aircraft lighting:** jets are lit by their surroundings (image-based lighting): the sky by day, the floodlit
+  airport at night, so white fuselages and liveries stay readable after dark and the paint has a sheen.
+  Buildings keep their own lighting.
+- **Aircraft:** cabin windows light up at random, red and green wingtip lights and white tail lights are on,
+  and logo lights wash the airline's tail. Following FAA AC 120-74, the red beacons on the roof and belly
+  start flashing at pushback, the bright nose gear taxi light (lighting the taxiway ahead) is on while
+  taxiing, strobes flash on entering the runway, and landing lights come on with the takeoff clearance.
+  Models exported without lights, and the placeholder airliner, get the same set placed from their shape.
 
 **Glow:**
 - **Rendering:** the scene renders in HDR with ACES tone mapping, then a bloom pass.
@@ -150,7 +157,7 @@ What you see:
 - **Clouds:** gray the sky and dim the sun.
   - **Cumulus** (`cumulus.js`): FEW, SCT and BKN layers are heaps of soft puffs at the reported base. Their tops are lit
     by the sun (golden at sunset) and their undersides shaded. They tower in thunderstorms and drift with the wind.
-  - **Overcast** is a flat deck.
+  - **Overcast** is a solid deck of rolling stratocumulus: dark masses with lighter seams, brighter toward the horizon.
 - **Rain or snow:** falls around the camera and blows with the wind. The pavement looks wet in rain.
 - **Thunderstorms:** lightning flashes, followed by thunder.
 - **Low visibility:** airfield lights come on below 3 miles or under a 1,000 ft ceiling.
