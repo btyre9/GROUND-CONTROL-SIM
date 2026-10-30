@@ -262,7 +262,7 @@ role and the sim does the others, so each role can be practised on its own.
 - **Scenarios** are JSON files in `ramp/scenarios/`, listed in `ramp/scenario-list.json`. Each gives
   the aircraft, time of day, guidance (`marshaller` or `vdgs`) and the steps in order: who does each
   (`role`), what (`action`, from `ACTIONS` in `ramp/procedures.js`), what it follows (`after`) and the
-  pause before the sim does it (`delay`). `node --test ramp/` checks every scenario is a clean turn.
+  pause before the sim does it (`delay`). `node --test` (or `node --test "ramp/*.test.js"` for the ramp alone) checks every scenario is a clean turn.
 - **On the stand:**
   - FAA-style markings: lead-in line, 737 stop bar, red ERA line, service road, bridge parking box,
     GSE boxes and hydrant pits.
