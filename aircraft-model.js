@@ -17,9 +17,30 @@ let liveries = [];          // { model, airline, name, textures: { materialName:
 
 // Night glow: lit textures and cabin windows follow this, from 0 by day to 1 at night.
 export const nightGlow = { value: 0 };
+
+/* The surroundings' lighting map (sky by day, the floodlit airport at night) lights only the aircraft,
+   so their paint stays readable at night; buildings keep their own look. Every aircraft material is kept
+   here so a new map reaches them all. */
+const environment = { map: null, intensity: 1 };
+const litMaterials = new Set();
+function lit(material) {
+    material.envMap = environment.map;
+    material.envMapIntensity = environment.intensity;
+    litMaterials.add(material);
+    return material;
+}
+export function setAircraftEnvironment(map, intensity) {
+    const recompile = !environment.map !== !map;
+    environment.map = map; environment.intensity = intensity;
+    for (const material of litMaterials) {
+        material.envMap = map; material.envMapIntensity = intensity;
+        if (recompile) material.needsUpdate = true;
+    }
+}
 const glowingMaterials = new Set();
 
-export async function loadModels() {
+/* files: a different file for a model id, such as a version with opening doors for the ramp sim. */
+export async function loadModels(files = {}) {
     let manifest;
     try {
         manifest = await (await fetch(MANIFEST)).json();
@@ -29,11 +50,13 @@ export async function loadModels() {
     const loader = new GLTFLoader();
     await Promise.all(Object.entries(manifest.models).map(async ([id, model]) => {
         try {
-            const gltf = await loader.loadAsync(`3d-aircraft/${model.file}`);
+            const gltf = await loader.loadAsync(`3d-aircraft/${files[id] || model.file}`);
             const extras = gltf.asset?.extras || {};
             gltf.scene.traverse(o => { if (o.isMesh) o.castShadow = true; });
-            models[id] = { id, scene: gltf.scene, sizeClasses: model.sizeClasses, lights: extras.lights || [],
-                wheelbase: extras.wheelbaseM || WHEELBASE_M * SIZE_SCALE[model.sizeClasses[0]] };
+            const wheelbase = extras.wheelbaseM || WHEELBASE_M * SIZE_SCALE[model.sizeClasses[0]];
+            const shape = shapeOf(gltf.scene, wheelbase);
+            models[id] = { id, scene: gltf.scene, sizeClasses: model.sizeClasses, wheelbase, fin: shape.fin, doors: extras.doors || [],
+                lights: extras.lights?.length ? extras.lights : lightsFromShape(shape) };
         } catch (err) {
             console.warn(`Aircraft model ${id} did not load:`, err.message);
         }
@@ -95,19 +118,28 @@ function plainTexture(texture) {
     return plain;
 }
 
-// Cabin windows: each window has its own random number, so some are lit at night and others not.
-function cabinWindows(material, seed) {
+/* Night lighting painted on the model. Logo lights on the stabilizer wash the lower fin in its own paint
+   (fin: logo height, logo position along the body, reach, lowest point lit). With a seed, cabin windows
+   each get a random number too, so some are lit and others not. */
+function nightLighting(material, fin, seed = null) {
+    const windows = seed !== null;
     material.onBeforeCompile = shader => {
-        shader.uniforms.uSeed = { value: seed };
         shader.uniforms.uNight = nightGlow;
-        shader.vertexShader = 'attribute float _window;\nvarying float vWindow;\n' +
-            shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvWindow = _window;');
-        shader.fragmentShader = 'uniform float uSeed;\nuniform float uNight;\nvarying float vWindow;\n' +
+        shader.uniforms.uFin = { value: fin || new THREE.Vector4(0, 0, 0, 1e6) };
+        shader.uniforms.uSeed = { value: seed ?? 0 };
+        shader.vertexShader = 'attribute float _window;\nvarying float vWindow;\nvarying vec3 vLocal;\n' +
+            shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+                vLocal = position;
+                ${windows ? 'vWindow = _window;' : 'vWindow = 0.0;'}`);
+        shader.fragmentShader = 'uniform float uSeed;\nuniform float uNight;\nuniform vec4 uFin;\nvarying float vWindow;\nvarying vec3 vLocal;\n' +
             shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-                float litWindow = step(fract(vWindow * 13.7 + uSeed), 0.6);
-                totalEmissiveRadiance += vec3(1.0, 0.8, 0.5) * litWindow * uNight * 1.4;`);
+                float onFin = step(abs(vLocal.x), 0.7) * step(uFin.w, vLocal.y);
+                float logo = onFin * (1.0 - smoothstep(uFin.z * 0.25, uFin.z, distance(vLocal.yz, uFin.xy)));
+                totalEmissiveRadiance += diffuseColor.rgb * logo * uNight * 0.6;
+                ${windows ? `float litWindow = step(fract(vWindow * 13.7 + uSeed), 0.6);
+                totalEmissiveRadiance += vec3(1.0, 0.8, 0.5) * litWindow * uNight * 1.4;` : ''}`);
     };
-    material.customProgramCacheKey = () => 'cabin-windows';
+    material.customProgramCacheKey = () => windows ? 'night-windows' : 'night-logo';
     return material;
 }
 
@@ -121,6 +153,7 @@ function paintedMaterial(original, model, livery) {
         if (url) material.map = liveryTexture(url, original.map);
         else if (!livery && original.map && !original.transparent && model.id.startsWith('B73')) material.map = plainTexture(original.map);
         if (material.emissiveMap) glowingMaterials.add(material);
+        lit(nightLighting(material, model.fin));
         liveryMaterials.set(key, material);
     }
     return liveryMaterials.get(key);
@@ -129,6 +162,7 @@ function paintedMaterial(original, model, livery) {
 export function setNightGlow(value) {
     nightGlow.value = value;
     for (const material of glowingMaterials) material.emissive.setScalar(value * 1.2);
+    for (const material of finMaterials.values()) material.emissive.copy(material.color).multiplyScalar(value * 0.45);
 }
 
 function realAirliner(model, livery, sizeClass) {
@@ -138,18 +172,127 @@ function realAirliner(model, livery, sizeClass) {
         if (!o.isMesh) return;
         const windows = o.material.userData?.windows;
         o.material = paintedMaterial(o.material, model, livery);
-        if (windows) o.material = cabinWindows(o.material.clone(), seed);
+        if (windows) o.material = lit(nightLighting(o.material.clone(), model.fin, seed));
     });
     const plane = withShadow(object, SIZE_SCALE[sizeClass] || 1, model.wheelbase);
     plane.userData.modelId = model.id;
     plane.userData.liveryName = livery?.name || '';
-    // Its lights, all switched off until the sim says otherwise (steady ones show only after dark).
+    plane.userData.doors = model.doors;
+    // Its lights, all switched off until the sim says otherwise (steady ones show only after dark). Lights
+    // whose color X-Plane sets at run time come through negative and would darken the scene, so they go.
     const kinds = { beacon: KIND.beacon, strobe: KIND.strobe, landing: KIND.landing };
-    const lights = makeLights(model.lights.map(l => ({ pos: l.pos, color: l.color, kind: kinds[l.type] ?? KIND.steady,
-        size: l.type === 'landing' ? 2.4 : l.type === 'strobe' ? 2.2 : 1.2, phase: seed })), lightMaterial([0, 0, 0, 1]));
-    object.add(lights);
-    plane.userData.lights = lights.material.uniforms.uOn.value;
+    const list = model.lights.filter(l => l.color.every(c => c >= 0)).map(l => ({ pos: l.pos,
+        color: l.color.map(c => c * (LIGHT_GAIN[l.type] ?? 1)), kind: kinds[l.type] ?? KIND.steady, size: LIGHT_SIZE[l.type] ?? 1.2 }));
+    // X-Plane draws the nose gear taxi light from the gear animation, so the export leaves it out.
+    list.push({ pos: [0, 1.05, -model.wheelbase - 0.3], color: TAXI_COLOR, kind: KIND.taxi, size: LIGHT_SIZE.taxi });
+    return withLights(plane, object, list, seed, model.wheelbase);
+}
+
+const LIGHT_SIZE = { landing: 2.4, strobe: 3, beacon: 1.4, taxi: 4 };
+// Strobes and the taxi light are far brighter than the position lights.
+const LIGHT_GAIN = { strobe: 2.6, landing: 1.5 };
+const TAXI_COLOR = [2.6, 2.5, 2.2];
+
+/* For a model exported without lights: places the standard set from its own shape. Wingtips are its
+   widest points, the beacons sit on the roof and belly ahead of the main gear, and the tail light at the
+   back of the tail cone. Models have the main gear at the origin and the nose toward -z. */
+function shapeOf(scene, wheelbase) {
+    scene.updateMatrixWorld(true);
+    const v = new THREE.Vector3(), points = [];
+    scene.traverse(o => {
+        if (!o.isMesh) return;
+        const pos = o.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i += 2) points.push(v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld).toArray());
+    });
+    // Reduced rather than spread: a model has far more points than a call can take as arguments.
+    const max = list => list.reduce((m, x) => Math.max(m, x), -Infinity), min = list => -max(list.map(x => -x));
+    const span = max(points.map(p => Math.abs(p[0])));
+    const tip = side => {
+        const near = points.filter(p => p[0] * side > span * 0.985);
+        return [side * span, near.reduce((a, p) => a + p[1], 0) / near.length, min(near.map(p => p[2]))];
+    };
+    const midZ = -wheelbase * 0.3;
+    const body = points.filter(p => Math.abs(p[0]) < 0.4 && Math.abs(p[2] - midZ) < wheelbase * 0.1);
+    const top = max(body.map(p => p[1])), belly = min(body.filter(p => p[1] > 0.6).map(p => p[1]));
+    // The tail cone, not the fin above it, which sweeps back farther.
+    const cone = points.filter(p => Math.abs(p[0]) < 0.5 && p[1] < top);
+    const tailZ = max(cone.map(p => p[2]));
+    const tailY = cone.filter(p => p[2] > tailZ - 0.5).reduce((a, p, _, all) => a + p[1] / all.length, 0);
+    // The fin: everything on the centerline above the roof. Logo lights on the stabilizer light its lower part.
+    const fin = points.filter(p => Math.abs(p[0]) < 0.6 && p[1] > top + 0.3);
+    const finTop = max(fin.map(p => p[1])), logoY = top + (finTop - top) * 0.4;
+    const atLogo = fin.filter(p => Math.abs(p[1] - logoY) < 0.6);
+    const logoZ = atLogo.reduce((a, p) => a + p[2], 0) / atLogo.length;
+    return { span, left: tip(-1), right: tip(1), midZ, top, belly, tailZ, tailY,
+        fin: fin.length ? new THREE.Vector4(logoY, logoZ, (finTop - top) * 0.6, top - 0.3) : null };
+}
+
+function lightsFromShape({ left, right, midZ, top, belly, tailZ, tailY }) {
+    const halfWidth = (top - belly) / 2, rootY = belly + halfWidth * 0.4;
+    return [
+        { type: 'beacon', color: [1, 0, 0], pos: [0, top + 0.15, midZ] },
+        { type: 'beacon', color: [1, 0, 0], pos: [0, belly - 0.15, midZ * 0.4] },
+        { type: 'nav', color: [0.9, 0.03, 0], pos: [left[0] - 0.1, left[1], left[2] + 0.3] },
+        { type: 'nav', color: [0, 0.9, 0.3], pos: [right[0] + 0.1, right[1], right[2] + 0.3] },
+        { type: 'strobe', color: [0.85, 0.85, 1], pos: [left[0] - 0.1, left[1], left[2] + 0.7] },
+        { type: 'strobe', color: [0.85, 0.85, 1], pos: [right[0] + 0.1, right[1], right[2] + 0.7] },
+        { type: 'nav', color: [0.95, 0.82, 0.72], pos: [0, tailY, tailZ + 0.1] },
+        { type: 'strobe', color: [1, 1, 1], pos: [0, tailY, tailZ + 0.2] },
+        { type: 'landing', color: [0.9, 0.9, 1], pos: [-(halfWidth + 0.9), rootY, midZ * 0.75] },
+        { type: 'landing', color: [0.9, 0.9, 1], pos: [halfWidth + 0.9, rootY, midZ * 0.75] }
+    ];
+}
+
+// The placeholder's lights in its A320 meters: red beacons on top and under the belly, red (left) and
+// green (right) wingtip lights with white strobes and white tail lights, wing root landing lights, and
+// the taxi light on the nose gear.
+const PLACEHOLDER_LIGHTS = [
+    { pos: [0, 5.25, -2], color: [1, 0, 0], kind: KIND.beacon, size: LIGHT_SIZE.beacon },
+    { pos: [0, 1.15, -1], color: [1, 0, 0], kind: KIND.beacon, size: LIGHT_SIZE.beacon },
+    { pos: [-17.95, 3.9, 3.9], color: [0.9, 0.03, 0], kind: KIND.steady, size: 1.2 },
+    { pos: [17.95, 3.9, 3.9], color: [0, 0.9, 0.3], kind: KIND.steady, size: 1.2 },
+    { pos: [-17.95, 3.9, 5.3], color: [0.95, 0.82, 0.72], kind: KIND.steady, size: 1.2 },
+    { pos: [17.95, 3.9, 5.3], color: [0.95, 0.82, 0.72], kind: KIND.steady, size: 1.2 },
+    { pos: [-18.05, 3.9, 4.3], color: [2.2, 2.2, 2.6], kind: KIND.strobe, size: LIGHT_SIZE.strobe },
+    { pos: [18.05, 3.9, 4.3], color: [2.2, 2.2, 2.6], kind: KIND.strobe, size: LIGHT_SIZE.strobe },
+    { pos: [0, 3.65, 20.1], color: [2.6, 2.6, 2.6], kind: KIND.strobe, size: LIGHT_SIZE.strobe },
+    { pos: [-2.6, 2.3, -3.4], color: [1.35, 1.35, 1.5], kind: KIND.landing, size: LIGHT_SIZE.landing },
+    { pos: [2.6, 2.3, -3.4], color: [1.35, 1.35, 1.5], kind: KIND.landing, size: LIGHT_SIZE.landing },
+    { pos: [0, 1.3, -12.85], color: TAXI_COLOR, kind: KIND.taxi, size: LIGHT_SIZE.taxi }
+];
+
+// Adds lights to a model, everything but the steady ones switched off, and keeps their switches on the plane.
+function withLights(plane, model, list, seed, wheelbase) {
+    const lights = makeLights(list.map(l => ({ ...l, phase: seed })), lightMaterial([0, 0, 0, 1]));
+    model.add(lights);
+    plane.userData.lights = lights.material.uniforms;
+    plane.userData.pool = taxiPool(plane, wheelbase);
     return plane;
+}
+
+/* The patch of pavement the taxi light lights up ahead of the nose: brightest just ahead, spreading and
+   fading forward. It rides on the ground shadow, so it stays on the pavement. */
+const poolGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, 0, -0.5);
+function taxiPool(plane, wheelbase) {
+    const material = new THREE.ShaderMaterial({
+        uniforms: { uI: { value: 0 } },
+        vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `uniform float uI; varying vec2 vUv;
+            void main() {
+                float y = vUv.y, x = (vUv.x - 0.5) * 2.0 / (0.3 + 0.7 * y);
+                float glow = exp(-x * x * 2.5) * smoothstep(0.0, 0.1, y) * (1.0 - smoothstep(0.3, 1.0, y));
+                gl_FragColor = vec4(vec3(1.0, 0.93, 0.8) * glow * uI, 1.0);
+            }`,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+    });
+    const pool = new THREE.Mesh(poolGeometry, material);
+    const shadow = plane.userData.shadow, k = shadow.scale.x;
+    pool.scale.set(20 / k, 1, 55 / k);
+    pool.position.set(0, 0.01, -(wheelbase + 3) / k);
+    pool.renderOrder = LAYER.shadow + 1;
+    pool.visible = false;
+    shadow.add(pool);
+    return material.uniforms.uI;
 }
 
 // Wingspan scale against an A320 for each ICAO aerodrome size class.
@@ -247,9 +390,16 @@ function buildParts() {
 const materials = new Map();
 function material(color, options = {}) {
     const key = `${color}-${JSON.stringify(options)}`;
-    if (!materials.has(key)) materials.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1, ...options }));
+    if (!materials.has(key)) materials.set(key, lit(new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1, ...options })));
     return materials.get(key);
 }
+// The placeholder's fin, lit by its logo lights at night.
+const finMaterials = new Map();
+function finMaterial(color) {
+    if (!finMaterials.has(color)) finMaterials.set(color, lit(new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1 })));
+    return finMaterials.get(color);
+}
+
 // Drawn after everything solid but depth-tested, so it darkens the ground and never the aircraft.
 const shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32,
     depthWrite: false, side: THREE.DoubleSide });
@@ -265,14 +415,14 @@ export function makeAirliner({ sizeClass = 'C', airline = '' } = {}) {
     const meshes = [
         new THREE.Mesh(parts.body, material(0xf3f4f5)),
         new THREE.Mesh(parts.wings, material(0xb9bec4)),
-        new THREE.Mesh(parts.fin, material(livery.tail)),
+        new THREE.Mesh(parts.fin, finMaterial(livery.tail)),
         new THREE.Mesh(parts.engines, material(livery.stripe === livery.tail ? 0xd5d8dc : livery.stripe)),
         new THREE.Mesh(parts.gear, material(0x2a2a2a)),
         new THREE.Mesh(parts.windows, material(0x111820, { roughness: 0.2 }))
     ];
     for (const m of meshes) { m.castShadow = true; model.add(m); }
     model.scale.setScalar(scale);
-    return withShadow(model, scale, WHEELBASE_M * scale);
+    return withLights(withShadow(model, scale, WHEELBASE_M * scale), model, PLACEHOLDER_LIGHTS, Math.random(), WHEELBASE_M * scale);
 }
 
 function withShadow(model, scale, wheelbase) {
@@ -289,9 +439,16 @@ function withShadow(model, scale, wheelbase) {
     return plane;
 }
 
-// Switches a real model's lights; the placeholder has none. Steady lights (nav, logo) are always on.
-export function setAircraftLights(plane, { beacon = false, strobe = false, landing = false } = {}) {
-    plane.userData.lights?.set(beacon ? 1 : 0, strobe ? 1 : 0, landing ? 1 : 0, 1);
+// Switches an airliner's lights. Steady lights (nav, logo) are always on.
+export function setAircraftLights(plane, { beacon = false, strobe = false, landing = false, taxi = false } = {}) {
+    const lights = plane.userData.lights;
+    if (!lights) return;
+    lights.uOn.value.set(beacon ? 1 : 0, strobe ? 1 : 0, landing ? 1 : 0, 1);
+    lights.uTaxi.value = taxi ? 1 : 0;
+    // The pool shows mostly at night and goes once the wheels leave the pavement.
+    const pool = plane.userData.pool, onGround = plane.position.y < 3;
+    pool.value = taxi && onGround ? 0.08 + 0.5 * lightUniforms.uDark.value : 0;
+    plane.userData.shadow.children[0].visible = pool.value > 0;
 }
 
 // Places a plane by its main gear position (local meters) and heading, keeping its shadow under it.

@@ -92,10 +92,11 @@ export class Departure {
 
     place() {
         placeAirliner(this.plane, this.main.x, this.main.z, this.heading, this.altitude, this.pitch);
-        // Beacon on from pushback; taxi and landing lights while moving; strobes once on the runway.
-        const moving = this.state !== 'ready-push';
-        setAircraftLights(this.plane, { beacon: moving, landing: ['taxi', 'takeoff'].includes(this.state) && this.speed > 1,
-            strobe: this.state === 'takeoff' || this.state === 'lined-up' });
+        // As in FAA AC 120-74: beacon on from pushback, the taxi light while taxiing, strobes on entering the
+        // runway, and landing lights once cleared for takeoff.
+        setAircraftLights(this.plane, { beacon: this.state !== 'ready-push',
+            taxi: (this.state === 'taxi' && this.speed > 1) || this.state === 'takeoff',
+            strobe: this.state === 'takeoff' || this.state === 'lined-up', landing: this.state === 'takeoff' });
     }
 
     /* Plans the route to the runway, along the named taxiways if given; returns false when the network

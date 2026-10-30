@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenATC Ramp</title>
+    <link rel="icon" href="data:,">
+    <style>
+        :root { --panel: rgba(12, 18, 24, 0.88); --line: #2b3a46; --text: #d8e2ea; --dim: #8396a6; --accent: #4fd1a5; --warn: #f2c14e; --bad: #ff6b5b; --hivis: #c8f526; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; background: #0b1117; color: var(--text); font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow: hidden; }
+        #app { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: auto 1fr; height: 100%; }
+        header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+        header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: 0.08em; color: var(--hivis); }
+        header .spacer { margin-left: auto; }
+        #clock { color: var(--dim); min-width: 80px; }
+        button, select { background: #16222c; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 9px; font: inherit; cursor: pointer; }
+        button:hover { border-color: var(--accent); }
+        button.primary { background: var(--accent); color: #062018; border-color: var(--accent); font-weight: bold; }
+        label { color: var(--dim); display: inline-flex; align-items: center; gap: 4px; }
+        #view { position: relative; min-height: 0; }
+        #view canvas { display: block; }
+        .pane { position: absolute; inset: 0; width: 100%; height: 100%; }
+        .labels { position: absolute; inset: 0; pointer-events: none; }
+        .tag { background: rgba(10, 16, 22, 0.72); color: var(--text); padding: 1px 5px; border-radius: 3px; font-size: 10px; border: 1px solid rgba(200, 245, 38, 0.45); white-space: nowrap; }
+        .tag.you { color: #062018; background: var(--hivis); font-weight: bold; }
+        .spot { color: #062018; background: var(--warn); padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: bold; white-space: nowrap; }
+        #hud { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+        #prompt { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 14px; font-size: 14px; min-height: 1em; }
+        #prompt:empty { display: none; }
+        #prompt b { color: var(--warn); }
+        #signals { display: none; gap: 5px; pointer-events: auto; flex-wrap: wrap; justify-content: center; }
+        #signals.on { display: flex; }
+        #signals button { font-size: 12px; padding: 5px 8px; }
+        #signals button.active { background: #ff7a1a; color: #1a0a00; border-color: #ff7a1a; }
+        #keys { position: absolute; left: 10px; top: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; color: var(--dim); font-size: 11px; }
+        #keys b { color: var(--text); }
+        #alert { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(120, 18, 10, 0.92); border: 1px solid var(--bad); color: #fff; border-radius: 6px; padding: 8px 14px; font-size: 13px; max-width: 70%; display: none; }
+        #alert.on { display: block; }
+        aside { grid-row: 2; grid-column: 2; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+        aside h2 { font-size: 11px; letter-spacing: 0.12em; color: var(--dim); margin: 10px 12px 6px; }
+        #brief { padding: 0 12px; color: var(--dim); }
+        #next { margin: 8px 12px 0; padding: 8px; border: 1px solid var(--warn); border-radius: 4px; color: var(--warn); }
+        #next:empty { display: none; }
+        #steps { overflow-y: auto; padding: 0 10px; flex: 1.4; min-height: 0; }
+        .step { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; padding: 3px 4px; border-radius: 3px; }
+        .step .who { color: var(--dim); font-size: 10px; }
+        .step.done { color: var(--dim); }
+        .step.done .mark::before { content: '✓'; color: var(--accent); }
+        .step.ready .mark::before { content: '›'; color: var(--warn); }
+        .step.mine { background: rgba(200, 245, 38, 0.08); }
+        .step.mine.ready { cursor: pointer; outline: 1px solid rgba(242, 193, 78, 0.6); }
+        .step.event { font-style: italic; }
+        #log { overflow-y: auto; padding: 0 12px 10px; flex: 1; min-height: 0; font-size: 11px; }
+        #log div { padding: 1px 0; }
+        #log .violation { color: var(--bad); }
+        #log .warn { color: var(--warn); }
+        #log .ok { color: var(--accent); }
+        #score { padding: 6px 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; }
+        #score b { font-size: 16px; }
+        #debrief { position: absolute; inset: 0; background: rgba(5, 9, 13, 0.82); display: none; align-items: center; justify-content: center; z-index: 10; }
+        #debrief.on { display: flex; }
+        #debrief > div { background: #101a22; border: 1px solid var(--line); border-radius: 8px; padding: 18px 22px; max-width: 640px; max-height: 80%; overflow-y: auto; }
+        #debrief h3 { margin: 0 0 8px; }
+        #debrief .pass { color: var(--accent); }
+        #debrief .fail { color: var(--bad); }
+        #debrief li { margin: 4px 0; }
+        #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 14px; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="apt-parser.js"></script>
+    <script src="astro.js"></script>
+    <script src="ramp/procedures.js"></script>
+</head>
+<body>
+<div id="app">
+    <header>
+        <h1>OPENATC RAMP</h1>
+        <select id="scenario" title="Scenario"></select>
+        <label>Role <select id="role"></select></label>
+        <label><input type="checkbox" id="guided" checked> Guided</label>
+        <button id="start" class="primary">Start</button>
+        <span class="spacer"></span>
+        <label>Weather <select id="weather"></select></label>
+        <label>Speed <select id="speed"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+        <button id="view-btn" title="Change view (V)">View: Follow</button>
+        <button id="zones-btn" title="Show hazard zones (H)">Hazard zones</button>
+        <button id="pause-btn" title="Pause (P)">Pause</button>
+        <span id="clock"></span>
+    </header>
+    <div id="view">
+        <div id="three" class="pane"></div>
+        <div id="loading">Loading the ramp…</div>
+        <div id="keys"><b>WASD</b> walk · <b>Shift</b> hurry · <b>drag</b> look · <b>wheel</b> zoom · <b>E</b> do task · <b>V</b> view · <b>H</b> hazard zones</div>
+        <div id="alert"></div>
+        <div id="hud">
+            <div id="prompt"></div>
+            <div id="signals"></div>
+        </div>
+        <div id="debrief"><div id="debrief-body"></div></div>
+    </div>
+    <aside>
+        <h2>BRIEF</h2>
+        <div id="brief"></div>
+        <div id="next"></div>
+        <h2>PROCEDURE</h2>
+        <div id="steps"></div>
+        <h2>LOG</h2>
+        <div id="log"></div>
+        <div id="score"><span>Safety score</span><b id="score-value">100</b></div>
+    </aside>
+</div>
+<script type="module" src="ramp/main.js"></script>
+</body>
+</html>
